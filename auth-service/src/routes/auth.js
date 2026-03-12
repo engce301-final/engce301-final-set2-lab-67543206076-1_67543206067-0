@@ -1,105 +1,140 @@
 const express  = require('express');
 const bcrypt   = require('bcryptjs');
-const { pool } = require('../db/db');
+const { Pool } = require('pg');
 const { generateToken, verifyToken } = require('../middleware/jwtUtils');
 
 const router = express.Router();
 
-// ── Helper: ส่ง log ไปที่ Log Service ────────────────────────────────
-async function logEvent({ service='auth-service', level, event, userId, ip, method, path, statusCode, message, meta }) {
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // Railway ต้องใช้ SSL
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  // fallback สำหรับ local (ถ้าไม่มี DATABASE_URL)
+  host:     process.env.DB_HOST     || 'auth-db',
+  port:     parseInt(process.env.DB_PORT) || 5432,
+  database: process.env.DB_NAME     || 'authdb',
+  user:     process.env.DB_USER     || 'admin',
+  password: process.env.DB_PASSWORD || 'secret',
+});
+
+// ── Helper: ส่ง log ──────────────────────────────────────────────
+async function logEvent(data) {
   try {
-    await fetch(`http://log-service:3003/api/logs/internal`, {
-      method:  'POST',
+    const logUrl = process.env.LOG_SERVICE_URL || 'http://log-service:3003';
+    await fetch(`${logUrl}/api/logs/internal`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ service, level, event, user_id: userId, ip_address: ip,
-                             method, path, status_code: statusCode, message, meta })
+      body: JSON.stringify({ service: 'auth-service', ...data })
     });
-  } catch (_) {
-    // ถ้า log service ไม่ตอบ ไม่ต้องหยุดการทำงาน
-  }
+  } catch (_) {}
 }
 
-// ─────────────────────────────────────────────
-// POST /api/auth/login
-// ❌ ไม่มี /register — ใช้ Seed Users เท่านั้น
-// ─────────────────────────────────────────────
-router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  const ip = req.headers['x-real-ip'] || req.ip;
+// ── Health ───────────────────────────────────────────────────────
+router.get('/health', (_, res) => res.json({ status: 'ok', service: 'auth-service' }));
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'กรุณากรอก email และ password' });
+// ── T2: POST /api/auth/register → 201 + user ────────────────────
+router.post('/register', async (req, res) => {
+  const { username, email, password, role } = req.body;
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'username, email and password are required' });
   }
-
   try {
-    const result = await pool.query(
-      'SELECT * FROM users WHERE email = $1', [email.toLowerCase()]
+    const exists = await pool.query(
+      'SELECT id FROM users WHERE email = $1 OR username = $2',
+      [email.toLowerCase(), username]
     );
-    const user = result.rows[0];
-
-    // Timing attack prevention
-    const dummyHash = '$2b$10$invalidhashpaddinginvalidhashpaddinginvalidhashpadding00';
-    const passwordHash = user ? user.password_hash : dummyHash;
-    const isValid = await bcrypt.compare(password, passwordHash);
-
-    if (!user || !isValid) {
-      await logEvent({ level:'WARN', event:'LOGIN_FAILED',
-        ip, method:'POST', path:'/api/auth/login', statusCode:401,
-        message: `Login failed for: ${email}`, meta: { email } });
-      return res.status(401).json({ error: 'Email หรือ Password ไม่ถูกต้อง' });
+    if (exists.rows.length) {
+      return res.status(409).json({ error: 'Email or username already exists' });
     }
-
-    // อัปเดต last_login
-    await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
-
-    const token = generateToken({ sub: user.id, email: user.email, role: user.role, username: user.username });
-
-    await logEvent({ level:'INFO', event:'LOGIN_SUCCESS', userId: user.id,
-      ip, method:'POST', path:'/api/auth/login', statusCode:200,
-      message: `User ${user.username} logged in`, meta: { username: user.username, role: user.role } });
-
-    res.json({
-      message: 'Login สำเร็จ',
-      token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role }
-    });
-
+    const password_hash = await bcrypt.hash(password, 10);
+    const { rows } = await pool.query(
+      `INSERT INTO users (username, email, password_hash, role)
+       VALUES ($1, $2, $3, $4) RETURNING id, username, email, role, created_at`,
+      [username, email.toLowerCase(), password_hash, role || 'member']
+    );
+    await logEvent({ level: 'INFO', event: 'REGISTER_SUCCESS',
+      user_id: rows[0].id, method: 'POST', path: '/api/auth/register', status_code: 201,
+      message: `User ${username} registered` });
+    res.status(201).json({ message: 'Registration successful', user: rows[0] });
   } catch (err) {
-    console.error('[AUTH] Login error:', err.message);
+    console.error('[auth] register error:', err.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// GET /api/auth/verify
-router.get('/verify', (req, res) => {
-  const token = (req.headers['authorization'] || '').split(' ')[1];
-  if (!token) return res.status(401).json({ valid: false, error: 'No token' });
+// ── T3: POST /api/auth/login → JWT ──────────────────────────────
+router.post('/login', async (req, res) => {
+  const { email, username, password } = req.body;
+  const identifier = email || username;
+  if (!identifier || !password) {
+    return res.status(400).json({ error: 'email/username and password are required' });
+  }
   try {
-    const decoded = verifyToken(token);
-    res.json({ valid: true, user: { id: decoded.sub, email: decoded.email, role: decoded.role, name: decoded.username, username: decoded.username } });
+    const { rows } = await pool.query(
+      'SELECT * FROM users WHERE email = $1 OR username = $1',
+      [identifier.toLowerCase()]
+    );
+    const user = rows[0];
+    const dummyHash = '$2b$10$invalidhashpaddinginvalidhashpaddinginvalidhash00000000';
+    const isValid = await bcrypt.compare(password, user ? user.password_hash : dummyHash);
+
+    if (!user || !isValid) {
+      await logEvent({ level: 'WARN', event: 'LOGIN_FAILED',
+        method: 'POST', path: '/api/auth/login', status_code: 401,
+        message: `Failed login for: ${identifier}` });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
+
+    const token = generateToken({
+      sub: user.id, id: user.id,
+      email: user.email, role: user.role, username: user.username
+    });
+
+    await logEvent({ level: 'INFO', event: 'LOGIN_SUCCESS', user_id: user.id,
+      method: 'POST', path: '/api/auth/login', status_code: 200,
+      message: `User ${user.username} logged in` });
+
+    res.json({ message: 'Login successful', token,
+      user: { id: user.id, username: user.username, email: user.email, role: user.role } });
+
   } catch (err) {
-    res.status(401).json({ valid: false, error: err.message });
+    console.error('[auth] login error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-// GET /api/auth/me (ต้องมี JWT)
+// ── GET /api/auth/verify ─────────────────────────────────────────
+router.get('/verify', (req, res) => {
+  const token = (req.headers['authorization'] || '').split(' ')[1];
+  if (!token) return res.json({ valid: false });
+  try {
+    const decoded = verifyToken(token);
+    res.json({ valid: true, user: {
+      id: decoded.sub || decoded.id, email: decoded.email,
+      role: decoded.role, name: decoded.username, username: decoded.username
+    }});
+  } catch {
+    res.json({ valid: false });
+  }
+});
+
+// ── GET /api/auth/me ─────────────────────────────────────────────
 router.get('/me', async (req, res) => {
   const token = (req.headers['authorization'] || '').split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const decoded = verifyToken(token);
-    const result  = await pool.query(
-      'SELECT id, username, email, role, created_at, last_login FROM users WHERE id = $1',
-      [decoded.sub]
+    const { rows } = await pool.query(
+      'SELECT id, username, email, role, created_at FROM users WHERE id = $1',
+      [decoded.sub || decoded.id]
     );
-    if (!result.rows[0]) return res.status(404).json({ error: 'User not found' });
-    res.json({ user: result.rows[0] });
-  } catch (err) {
+    if (!rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json({ user: rows[0] });
+  } catch {
     res.status(401).json({ error: 'Invalid token' });
   }
 });
-
-// GET /api/auth/health
-router.get('/health', (_, res) => res.json({ status:'ok', service:'auth-service', time: new Date() }));
 
 module.exports = router;

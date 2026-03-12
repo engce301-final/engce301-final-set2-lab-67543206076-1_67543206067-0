@@ -1,91 +1,123 @@
-# 🔐 Task Board — ENGCE301 Final Lab (Security Architecture)
+# 🔐 Task Board Set 2 — Cloud Deploy (Railway)
 
 ## 👥 ทีมผู้พัฒนา
 
 | ชื่อ | รหัสนักศึกษา |
 |------|--------------|
-| นายศราวุฒิ ข่ายแก้ว | 67543206076-1 |
-| นายพิธาน กันปาน | 67543206067-0 |
+| นักศึกษาคนที่ 1 | 67543206076 |
+| นักศึกษาคนที่ 2 | 67543206067 |
 
 ---
 
-## 🏗️ Architecture Diagram
+## 🌐 Railway Service URLs
+
+| Service | URL |
+|---------|-----|
+| Auth Service | `https://[AUTH_URL].railway.app` |
+| Task Service | `https://[TASK_URL].railway.app` |
+| User Service | `https://[USER_URL].railway.app` |
+
+> อัปเดต URL จริงหลัง deploy บน Railway
+
+---
+
+## 🏗️ Architecture Diagram (Cloud)
 
 ```
-                        ┌─────────────────────────────────────────────────┐
-                        │               CLIENT (Browser)                   │
-                        │         https://localhost (port 443)             │
-                        └─────────────────────┬───────────────────────────┘
-                                              │ HTTPS (TLS 1.2/1.3)
-                                              │ Self-signed Certificate
-                                              ▼
-                        ┌─────────────────────────────────────────────────┐
-                        │              NGINX (API Gateway)                 │
-                        │         Port 80 → redirect → 443                │
-                        │         Port 443 (TLS termination)               │
-                        │                                                  │
-                        │  Rate Limit: /api/auth/login → 5 req/min        │
-                        │  Rate Limit: /api/*          → 30 req/min       │
-                        └──────┬──────────┬──────────┬────────────────────┘
-                               │          │          │
-                HTTP (internal)│          │          │
-                               ▼          ▼          ▼
-              ┌────────────────┐  ┌───────────────┐  ┌───────────────┐
-              │  auth-service  │  │ task-service  │  │  log-service  │
-              │   port 3001    │  │   port 3002   │  │   port 3003   │
-              │                │  │               │  │               │
-              │ POST /login    │  │ GET    /tasks │  │ GET  /logs    │
-              │ GET  /verify   │  │ POST   /tasks │  │ POST /internal│
-              │ GET  /me       │  │ PUT    /tasks │  │ GET  /stats   │
-              └───────┬────────┘  └───────┬───────┘  └───────┬───────┘
-                      │                   │                   │
-                      └───────────────────┴───────────────────┘
-                                          │
-                                          ▼
-                        ┌─────────────────────────────────────────────────┐
-                        │              PostgreSQL (port 5432)              │
-                        │                                                  │
-                        │  tables: users │ tasks │ logs                   │
-                        └─────────────────────────────────────────────────┘
+                    ┌──────────────────────────────────────┐
+                    │           CLIENT (Browser)            │
+                    └──────────────┬───────────────────────┘
+                                   │ HTTPS
+                    ┌──────────────▼───────────────────────┐
+                    │     Gateway Strategy: Option A        │
+                    │   Frontend เรียก URL แต่ละ service    │
+                    │   โดยตรง (ง่าย ไม่ต้อง config Nginx) │
+                    └───┬──────────────┬────────────────────┘
+                        │              │              │
+              HTTPS     ▼    HTTPS     ▼    HTTPS     ▼
+        ┌─────────────────┐ ┌──────────────┐ ┌──────────────┐
+        │  auth-service   │ │task-service  │ │user-service  │
+        │    Railway      │ │   Railway    │ │   Railway    │
+        │   port 3001     │ │  port 3002   │ │  port 3003   │
+        │                 │ │              │ │              │
+        │ POST /register  │ │ GET  /tasks  │ │ GET /profile │
+        │ POST /login     │ │ POST /tasks  │ │ PUT /profile │
+        │ GET  /verify    │ │ PUT  /tasks  │ │              │
+        └───────┬─────────┘ └──────┬───────┘ └──────┬───────┘
+                │                  │                 │
+                ▼                  ▼                 ▼
+        ┌───────────┐      ┌───────────┐     ┌───────────┐
+        │  auth-db  │      │  task-db  │     │  user-db  │
+        │ Railway   │      │ Railway   │     │ Railway   │
+        │ PostgreSQL│      │ PostgreSQL│     │ PostgreSQL│
+        └───────────┘      └───────────┘     └───────────┘
 
-                        ┌─────────────────────────────────────────────────┐
-                        │            frontend (Static Files)               │
-                        │         nginx:alpine — port 80 (internal)        │
-                        │         index.html │ logs.html                   │
-                        └─────────────────────────────────────────────────┘
-
-  Network: taskboard-net (Docker bridge — services คุยกันด้วยชื่อ container)
+  JWT_SECRET เหมือนกันทุก service ← สำคัญมาก!
 ```
 
 ---
 
-## 🚀 วิธีรัน
+## 🎯 Gateway Strategy: Option A
 
-### 1. สร้าง Self-signed Certificate (ครั้งแรกเท่านั้น)
+**เลือก Option A — Frontend เรียก URL ของแต่ละ service โดยตรง**
+
+**เหตุผล:**
+- ง่ายที่สุดสำหรับ Lab นี้ — ไม่ต้อง deploy Nginx เพิ่ม
+- ลด complexity ในการ config
+- Railway ทำ HTTPS และ Load Balance ให้อยู่แล้ว
+- เหมาะสำหรับ microservices ที่ scale แยกกัน
+
+**ข้อจำกัด:**
+- Frontend ต้องรู้ URL ของทุก service (แก้ด้วย environment variables)
+- ไม่มี Single Entry Point
+
+---
+
+## 🚀 วิธีรัน Local Test
+
 ```bash
-chmod +x ./scripts/gen-certs.sh
-./scripts/gen-certs.sh
+# 1. สร้าง init.sql แต่ละ service (ถ้ายังไม่มี)
+# 2. รัน local environment
+docker compose -f docker-compose.local.yml down -v
+docker compose -f docker-compose.local.yml up --build
 ```
 
-### 2. ตั้งค่า Environment Variables
-```bash
-cp .env.example .env
-# แก้ไข .env ถ้าต้องการเปลี่ยน password หรือ JWT_SECRET
+## ☁️ วิธี Deploy บน Railway
+
+### Phase 1: Auth Service
+```
+1. railway.app → New Project → Deploy from GitHub
+2. Root Directory = auth-service
+3. Add PostgreSQL Plugin → ชื่อ auth-db
+4. Environment Variables:
+   DATABASE_URL = ${{auth-db.DATABASE_URL}}
+   JWT_SECRET   = engce301-super-secret-change-me
+   JWT_EXPIRES  = 1h
+   PORT         = 3001
+   NODE_ENV     = production
 ```
 
-### 3. Build และ Start ทุก Container
-```bash
-docker compose up --build
+### Phase 2: Task Service
+```
+1. New Service ใน Project เดียวกัน
+2. Root Directory = task-service
+3. Add PostgreSQL Plugin → ชื่อ task-db
+4. Environment Variables:
+   DATABASE_URL = ${{task-db.DATABASE_URL}}
+   JWT_SECRET   = engce301-super-secret-change-me  ← ต้องเหมือน Auth!
+   PORT         = 3002
+   NODE_ENV     = production
 ```
 
-### 4. เข้าใช้งาน
-- **Web UI:** https://localhost (กด Advanced → Proceed เพราะใช้ self-signed cert)
-- **API:** https://localhost/api/auth/login
-
-### หยุดระบบ
-```bash
-docker compose down        # หยุด containers
-docker compose down -v     # หยุด + ลบ database volume (reset ข้อมูล)
+### Phase 3: User Service
+```
+1. New Service → Root Directory = user-service
+2. Add PostgreSQL Plugin → ชื่อ user-db
+3. Environment Variables:
+   DATABASE_URL = ${{user-db.DATABASE_URL}}
+   JWT_SECRET   = engce301-super-secret-change-me  ← ต้องเหมือนทุก service!
+   PORT         = 3003
+   NODE_ENV     = production
 ```
 
 ---
@@ -98,103 +130,95 @@ docker compose down -v     # หยุด + ลบ database volume (reset ข้
 | bob | bob@lab.local | bob456 | member |
 | admin | admin@lab.local | adminpass | admin |
 
-> ⚠️ passwords ถูก hash ด้วย bcrypt (saltRounds=10) ก่อนเก็บใน DB
-
 ---
 
-## 🔒 HTTPS ทำงานอย่างไรในระบบนี้
+## 🧪 Test Commands (แทน URL จริงจาก Railway)
 
-### ภาพรวม
-ระบบนี้ใช้ **TLS Termination ที่ Nginx** หมายความว่า HTTPS ถูกจัดการทั้งหมดที่ Nginx ส่วน services ด้านหลัง (auth, task, log) คุยกันด้วย HTTP ปกติภายใน Docker network ที่ปลอดภัย
+```bash
+AUTH_URL="https://[auth-service].railway.app"
+TASK_URL="https://[task-service].railway.app"
+USER_URL="https://[user-service].railway.app"
 
-### ขั้นตอนการทำงาน
+# T2: Register
+curl -X POST $AUTH_URL/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"testuser","email":"test@example.com","password":"test123"}'
 
+# T3: Login → เก็บ token
+TOKEN=$(curl -s -X POST $AUTH_URL/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@lab.local","password":"alice123"}' | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+echo $TOKEN
+
+# T4: Create Task (มี JWT)
+curl -X POST $TASK_URL/api/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"My first cloud task","priority":"high"}'
+
+# T5: Get Tasks (มี JWT)
+curl $TASK_URL/api/tasks \
+  -H "Authorization: Bearer $TOKEN"
+
+# T6: Get Profile (มี JWT)
+curl $USER_URL/api/users/profile \
+  -H "Authorization: Bearer $TOKEN"
+
+# T7: Update Profile
+curl -X PUT $USER_URL/api/users/profile \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"bio":"Hello from Railway!"}'
+
+# T8: No JWT → 401
+curl $TASK_URL/api/tasks
 ```
-Browser ──HTTPS──▶ Nginx ──HTTP──▶ auth-service
-                  (TLS จบที่นี่)   task-service
-                                   log-service
-```
-
-1. **Certificate Generation** — `scripts/gen-certs.sh` สร้าง self-signed certificate (`cert.pem` + `key.pem`) ด้วย OpenSSL สำหรับ `localhost`
-
-2. **HTTP → HTTPS Redirect** — Nginx รับ request ที่ port 80 แล้ว redirect ด้วย `301` ไปที่ port 443 ทุกครั้ง
-
-3. **TLS Termination** — Nginx ถอดรหัส HTTPS และส่งต่อเป็น HTTP ไปยัง services ภายใน Docker network (`taskboard-net`)
-
-4. **TLS Configuration** ที่ใช้:
-   - Protocol: `TLSv1.2` และ `TLSv1.3` เท่านั้น (ปิด TLS 1.0/1.1)
-   - `ssl_prefer_server_ciphers on` — ให้ server เลือก cipher ที่ปลอดภัยกว่า
-   - `ssl_session_cache shared:SSL:10m` — cache TLS session เพื่อประสิทธิภาพ
-
-5. **Security Headers** ที่ส่งทุก response:
-   - `Strict-Transport-Security` — บังคับ HTTPS ต่อไปอีก 1 ปี
-   - `X-Frame-Options: DENY` — ป้องกัน clickjacking
-   - `X-Content-Type-Options: nosniff` — ป้องกัน MIME sniffing
-   - `X-XSS-Protection` — เปิด XSS filter ของ browser
-
-6. **Rate Limiting** ที่ Nginx:
-   - `/api/auth/login` → 5 requests/นาที (ป้องกัน brute force)
-   - `/api/*` → 30 requests/นาที (ป้องกัน DDoS)
-   - เกิน limit → ตอบ `429 Too Many Requests`
-
-### ทำไมถึง Self-signed?
-เนื่องจากเป็น development environment บน `localhost` จึงไม่สามารถใช้ Certificate Authority จริง (เช่น Let's Encrypt) ได้ Browser จะแสดง warning ว่า "Not Secure" ซึ่งเป็นเรื่องปกติสำหรับ local dev
 
 ---
 
 ## 📁 โครงสร้างโปรเจกต์
 
 ```
-engce301_final/
-├── auth-service/          # JWT Authentication Service (port 3001)
+engce301-final-lab2/
+├── auth-service/
 │   ├── src/
-│   │   ├── routes/auth.js     # POST /login, GET /verify, GET /me
-│   │   ├── middleware/
-│   │   │   └── jwtUtils.js    # generateToken, verifyToken
-│   │   └── db/db.js           # PostgreSQL connection pool
-│   └── Dockerfile
-├── task-service/          # Task CRUD Service (port 3002)
-│   ├── src/
-│   │   ├── routes/task.js     # GET/POST/PUT/DELETE /tasks
-│   │   ├── middleware/
-│   │   │   └── authMiddleware.js  # JWT verification middleware
-│   │   └── jwtUtils.js        # verifyToken
-│   └── Dockerfile
-├── log-service/           # Logging Service (port 3003)
-│   ├── src/
-│   │   └── index.js           # GET /logs, POST /internal
-│   └── Dockerfile
-├── frontend/              # Static Web UI
-│   ├── index.html             # Task Board UI
-│   ├── logs.html              # Log Dashboard
-│   └── Dockerfile
-├── nginx/                 # API Gateway + TLS
-│   ├── nginx.conf
+│   │   ├── routes/auth.js        # register, login, verify, me
+│   │   └── middleware/jwtUtils.js
+│   ├── init.sql                  # users table + seed
 │   ├── Dockerfile
-│   └── certs/
-│       ├── cert.pem
-│       └── key.pem
-├── db/
-│   └── init.sql           # Schema + Seed users
-├── scripts/
-│   └── gen-certs.sh       # สร้าง self-signed certificate
-├── docker-compose.yml
-├── .env.example
+│   └── package.json
+├── task-service/
+│   ├── src/
+│   │   ├── routes/task.js        # CRUD tasks
+│   │   ├── middleware/authMiddleware.js
+│   │   └── jwtUtils.js
+│   ├── init.sql                  # tasks table + seed
+│   ├── Dockerfile
+│   └── package.json
+├── user-service/          ← ใหม่ใน Set 2
+│   ├── src/
+│   │   ├── routes/users.js       # profile GET/PUT
+│   │   ├── middleware/authMiddleware.js
+│   │   └── jwtUtils.js
+│   ├── init.sql                  # users table + seed
+│   ├── Dockerfile
+│   └── package.json
+├── frontend/
+├── nginx/
+├── docker-compose.yml            # production (1 DB)
+├── docker-compose.local.yml      # local test (3 DBs)
 └── README.md
 ```
 
 ---
 
-## 🧪 Test Cases
+## 🐛 ปัญหาที่เจอและวิธีแก้
 
-| Test | คำสั่ง | Expected |
-|------|--------|----------|
-| T3 Login สำเร็จ | `POST /api/auth/login` (alice/alice123) | 200 + JWT token |
-| T4 Login ผิด | `POST /api/auth/login` (wrong password) | 401 |
-| T5 Create Task | `POST /api/tasks/` (มี JWT) | 201 Created |
-| T6 Get Tasks | `GET /api/tasks/` (มี JWT) | 200 + list |
-| T7 Update Task | `PUT /api/tasks/:id` (มี JWT) | 200 Updated |
-| T8 Delete Task | `DELETE /api/tasks/:id` (มี JWT) | 200 Deleted |
-| T9 No JWT | `GET /api/tasks/` (ไม่มี JWT) | 401 Unauthorized |
-| T10 View Logs | `GET /api/logs/` (มี JWT) | 200 + log entries |
-| T11 Rate Limit | POST login ผิด > 5 ครั้ง/นาที | 429 Too Many Requests |
+| ปัญหา | สาเหตุ | วิธีแก้ |
+|-------|--------|---------|
+| `pool is not defined` | comment out require db | เพิ่ม `new Pool()` ใน route โดยตรง |
+| `verifyToken is not a function` | require จาก `jsonwebtoken` แทน jwtUtils | สร้าง `src/jwtUtils.js` แยกแต่ละ service |
+| `init.sql: Is a directory` | mount folder แทนไฟล์ | สร้าง `init.sql` ใน folder ของแต่ละ service |
+| `401 หลัง login` | JWT payload ใช้ `sub` แต่ middleware ต้องการ `id` | เพิ่ม `id: decoded.sub \|\| decoded.id` |
+| `DB ไม่ init` | volume เก่าค้าง | `docker compose down -v` ก่อน up |
