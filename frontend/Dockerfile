@@ -1,4 +1,4 @@
-FROM nginx:1.25-alpine
+FROM nginx:alpine
 COPY index.html /usr/share/nginx/html/index.html
 COPY logs.html  /usr/share/nginx/html/logs.html
 EXPOSE 3000
