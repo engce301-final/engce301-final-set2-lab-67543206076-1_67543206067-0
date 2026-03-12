@@ -13,9 +13,9 @@
 
 | Service | URL |
 |---------|-----|
-| Auth Service | `https://[AUTH_URL].railway.app` |
-| Task Service | `https://[TASK_URL].railway.app` |
-| User Service | `https://[USER_URL].railway.app` |
+| Auth Service | `auth-service-production-c333.up.railway.app` |
+| Task Service | `task-service-production-f51c.up.railway.app` |
+| User Service | `user-service-production-c4d4.up.railway.app` |
 
 > อัปเดต URL จริงหลัง deploy บน Railway
 
